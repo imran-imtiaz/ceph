@@ -1,2 +1,2 @@
 # flake8: noqa
-from .module import Hello
+from .module import Vasa

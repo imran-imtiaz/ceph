@@ -8,6 +8,13 @@ from mgr_module import CLIReadCommand, HandleCommandResult, MgrModule, Option
 from threading import Event
 from typing import cast, Any, Optional, TYPE_CHECKING
 import errno
+import cherrypy
+
+
+class HelloWorld(object):
+    @cherrypy.expose
+    def index(self):
+        return "Hello World!"
 
 
 class Vasa(MgrModule):
@@ -114,7 +121,9 @@ class Vasa(MgrModule):
         This method is called by the mgr when the module starts and can be
         used for any background activity.
         """
-        self.log.info("Starting")
+        self.log.info("Starting cherrypy")
+        cherrypy.quickstart(HelloWorld(), '/')
+        self.log.info("Entering indefinite event loop")
         while self.run:
             # Do some useful background work here.
 

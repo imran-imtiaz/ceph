@@ -3,7 +3,7 @@
 **Jira:** https://ibm-ceph.atlassian.net/browse/IBMCEPH-14682
 **Ceph Tracker:** https://tracker.ceph.com/issues/77561
 **Status:** In Review
-**PR:** https://github.com/imran-imtiaz/ceph/pull/new/wip-rbd-cgsm-base-imran
+**PR:** https://github.com/imran-imtiaz/ceph/pull/1
 
 ## Implementation Summary
 Added snapshot schedule APIs for RBD mirror groups and fixed status endpoint to match CLI behavior.

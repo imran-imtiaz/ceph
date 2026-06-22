@@ -823,6 +823,119 @@ class RbdMirroringService:
             schedule_info.append(merged)
 
         return schedule_info if schedule_info else None
+    @classmethod
+    def group_snapshot_schedule_add(cls, level_spec: str, interval: str, start_time: Optional[str] = None):
+        """
+        Add a snapshot schedule for a mirror group.
+
+        Args:
+            level_spec: Level specification (pool/namespace/group or pool/group)
+            interval: Schedule interval (e.g., '1h', '2d', '30m')
+            start_time: Optional start time for the schedule
+        """
+        _rbd_support_remote('mirror_group_snapshot_schedule_add', level_spec,
+                            str(RBDSchedulerInterval(interval)), start_time or '')
+
+    @classmethod
+    def group_snapshot_schedule_remove(cls, level_spec: str, interval: Optional[str] = None,
+                                       start_time: Optional[str] = None):
+        """
+        Remove a snapshot schedule from a mirror group.
+
+        Args:
+            level_spec: Level specification (pool/namespace/group or pool/group)
+            interval: Optional schedule interval to remove specific schedule
+            start_time: Optional start time to remove specific schedule
+        """
+        _rbd_support_remote('mirror_group_snapshot_schedule_remove', level_spec,
+                            interval or '', start_time or '')
+
+    @classmethod
+    def group_snapshot_schedule_list(cls, level_spec: str = ''):
+        """
+        List snapshot schedules for mirror groups.
+
+        Args:
+            level_spec: Optional level specification to filter results
+
+        Returns:
+            Tuple containing return code, JSON string of schedules, and error message
+        """
+        return _rbd_support_remote('mirror_group_snapshot_schedule_list', level_spec)
+
+    @classmethod
+    def group_snapshot_schedule_status(cls, level_spec: str = ''):
+        """
+        Get status of snapshot schedules for mirror groups.
+
+        Args:
+            level_spec: Optional level specification to filter results
+
+        Returns:
+            Tuple containing return code, JSON string of status, and error message
+        """
+        return _rbd_support_remote('mirror_group_snapshot_schedule_status', level_spec)
+
+    @classmethod
+    def get_group_snapshot_schedule_info(cls, level_spec: str = ''):
+        """
+        Retrieve group snapshot schedule information by merging schedule list and status.
+
+        Args:
+            level_spec (str, optional): Specification of a mirror group. If empty,
+                retrieves all schedule information.
+                Format: "<pool_name>/<namespace_name>/<group_name>" or "<pool_name>/<group_name>".
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: A list of merged schedule information
+            dictionaries if found, otherwise None.
+        """
+        schedule_info: List[Dict] = []
+
+        # schedule list and status provide the schedule interval
+        # and schedule timestamp respectively.
+        schedule_list_raw = cls.group_snapshot_schedule_list(level_spec)
+        schedule_status_raw = cls.group_snapshot_schedule_status(level_spec)
+
+        try:
+            schedule_list = json.loads(
+                schedule_list_raw[1]) if schedule_list_raw and schedule_list_raw[1] else {}
+            schedule_status = json.loads(
+                schedule_status_raw[1]) if schedule_status_raw and schedule_status_raw[1] else {}
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if not schedule_list or not schedule_status:
+            return None
+
+        scheduled_groups = schedule_status.get("scheduled_groups", [])
+
+        for _, schedule in schedule_list.items():
+            name = schedule.get("name")
+            if not name:
+                continue
+
+            # find status entry for this schedule
+            # by matching with the group name
+            group = next((
+                sched_group for sched_group in scheduled_groups
+                if sched_group.get("group") == name), None)
+            if not group:
+                continue
+
+            # eventually we are merging both the list and status entries
+            # all the needed info are fetched above and here we are just mapping
+            # it to the dictionary so that in one function we get
+            # the schedule related information.
+            merged = {
+                "name": name,
+                "schedule_interval": schedule.get("schedule", []),
+                "schedule_time": group.get("schedule_time")
+            }
+            schedule_info.append(merged)
+
+        return schedule_info if schedule_info else None
+
 
 
 class RbdImageMetadataService(object):

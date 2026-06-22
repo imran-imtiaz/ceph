@@ -36,16 +36,29 @@ RBD_MIRROR_GROUP_SCHEMA = {
 RBD_MIRROR_GROUP_STATUS_SCHEMA = {
     "name": (str, "Group name"),
     "global_id": (str, "Global ID"),
-    "state": (str, "Mirror state"),
+    "state": (str, "Mirror state (format: up+state or down+state)"),
     "description": (str, "Status description"),
     "last_update": (str, "Last update time"),
+    "images": ([{
+        "pool_id": (int, "Pool ID"),
+        "image_id": (str, "Image ID"),
+        "state": (str, "Image state"),
+        "description": (str, "Image description")
+    }], "Images in group"),
     "peer_sites": ([{
         "site_name": (str, "Site name"),
         "mirror_uuid": (str, "Mirror UUID"),
-        "state": (str, "Site state"),
+        "state": (str, "Site state (format: up+state or down+state)"),
         "description": (str, "Site description"),
-        "last_update": (str, "Last update time")
-    }], "Peer sites")
+        "last_update": (str, "Last update time"),
+        "images": ([{
+            "pool_id": (int, "Pool ID"),
+            "image_id": (str, "Image ID"),
+            "state": (str, "Image state"),
+            "description": (str, "Image description")
+        }], "Images at peer site")
+    }], "Peer sites"),
+    "snapshots": ([str], "Mirror snapshots (only for primary groups in snapshot mode)")
 }
 
 
@@ -242,6 +255,53 @@ class RbdMirrorGroup(RESTController):
             with rbd.Group(ioctx, group_name) as group:
                 status = group.mirror_group_get_global_status()
 
+                # Get mirror peers to populate unknown statuses
+                # This ensures all configured peer sites appear in the response
+                try:
+                    mirror_peers = []
+                    pool_ioctx = rbd_call(pool_name, None, lambda ctx: ctx)
+                    rbd_inst = rbd.RBD()
+                    mirror_peers = rbd_inst.mirror_peer_site_list(pool_ioctx)
+                except Exception:
+                    # If we can't get peers, continue with what we have
+                    pass
+
+                # Populate unknown mirror group site statuses
+                # This mimics the CLI behavior from populate_unknown_mirror_group_site_statuses()
+                site_statuses = status.get('site_statuses', [])
+                existing_uuids = {site.get('mirror_uuid') for site in site_statuses}
+                
+                # Add placeholder entries for missing peer sites
+                for peer in mirror_peers:
+                    peer_uuid = peer.get('uuid', '')
+                    if peer_uuid and peer_uuid not in existing_uuids:
+                        site_statuses.append({
+                            'mirror_uuid': peer_uuid,
+                            'site_name': peer.get('site_name', ''),
+                            'state': rbd.MIRROR_GROUP_STATUS_STATE_UNKNOWN,
+                            'description': 'status not found',
+                            'last_update': 0,
+                            'up': False,
+                            'mirror_images': {}
+                        })
+
+                # Map state enum to string
+                state_map = {
+                    rbd.MIRROR_GROUP_STATUS_STATE_UNKNOWN: 'unknown',
+                    rbd.MIRROR_GROUP_STATUS_STATE_ERROR: 'error',
+                    rbd.MIRROR_GROUP_STATUS_STATE_STARTING_REPLAY: 'starting_replay',
+                    rbd.MIRROR_GROUP_STATUS_STATE_REPLAYING: 'replaying',
+                    rbd.MIRROR_GROUP_STATUS_STATE_STOPPING_REPLAY: 'stopping_replay',
+                    rbd.MIRROR_GROUP_STATUS_STATE_STOPPED: 'stopped'
+                }
+
+                # Find local status (for primary site info)
+                local_status = None
+                for site in site_statuses:
+                    if site.get('mirror_uuid') == '':  # Local site has empty UUID
+                        local_status = site
+                        break
+
                 # Format the status response
                 result = {
                     'name': status.get('name', group_name),
@@ -249,20 +309,70 @@ class RbdMirrorGroup(RESTController):
                     'state': 'unknown',
                     'description': '',
                     'last_update': '',
-                    'peer_sites': []
+                    'peer_sites': [],
+                    'images': []
                 }
 
-                # Process site statuses
-                site_statuses = status.get('site_statuses', [])
+                # Set local status if available
+                if local_status:
+                    state_enum = local_status.get('state', rbd.MIRROR_GROUP_STATUS_STATE_UNKNOWN)
+                    state_str = state_map.get(state_enum, 'unknown')
+                    up = local_status.get('up', False)
+                    result['state'] = f"{'up' if up else 'down'}+{state_str}"
+                    result['description'] = local_status.get('description', '')
+                    result['last_update'] = str(local_status.get('last_update', ''))
+                    
+                    # Add images from local status
+                    for (pool_id, image_id), image_status in local_status.get('mirror_images', {}).items():
+                        result['images'].append({
+                            'pool_id': pool_id,
+                            'image_id': image_id,
+                            'state': f"{'up' if image_status.get('up', False) else 'down'}+{state_map.get(image_status.get('state'), 'unknown')}",
+                            'description': image_status.get('description', '')
+                        })
+
+                # Process peer site statuses (exclude local site)
                 for site in site_statuses:
+                    if site.get('mirror_uuid') == '':  # Skip local site
+                        continue
+                        
+                    state_enum = site.get('state', rbd.MIRROR_GROUP_STATUS_STATE_UNKNOWN)
+                    state_str = state_map.get(state_enum, 'unknown')
+                    up = site.get('up', False)
+                    
                     peer_site = {
                         'site_name': site.get('site_name', ''),
                         'mirror_uuid': site.get('mirror_uuid', ''),
-                        'state': str(site.get('state', 'unknown')),
+                        'state': f"{'up' if up else 'down'}+{state_str}",
                         'description': site.get('description', ''),
-                        'last_update': str(site.get('last_update', ''))
+                        'last_update': str(site.get('last_update', '')),
+                        'images': []
                     }
+                    
+                    # Add images for this peer site
+                    for (pool_id, image_id), image_status in site.get('mirror_images', {}).items():
+                        peer_site['images'].append({
+                            'pool_id': pool_id,
+                            'image_id': image_id,
+                            'state': f"{'up' if image_status.get('up', False) else 'down'}+{state_map.get(image_status.get('state'), 'unknown')}",
+                            'description': image_status.get('description', '')
+                        })
+                    
                     result['peer_sites'].append(peer_site)
+
+                # Add snapshots if this is a primary group in snapshot mode
+                info = status.get('info', {})
+                if info.get('primary') and info.get('mirror_image_mode') == rbd.RBD_MIRROR_IMAGE_MODE_SNAPSHOT:
+                    try:
+                        rbd_inst = rbd.RBD()
+                        snaps = rbd_inst.group_snap_list(ioctx, group_name)
+                        # Filter to only mirror snapshots
+                        result['snapshots'] = [
+                            snap.get('name', '') for snap in snaps
+                            if snap.get('name', '').startswith('.mirror.')
+                        ]
+                    except Exception:
+                        result['snapshots'] = []
 
                 return result
 
